@@ -49,8 +49,14 @@ internal enum CerealCoderTreeValueType: UInt8 {
 /// function takes a value of type `Type` and returns a byte array representation
 private func toByteArray<Type>(value: Type) -> [UInt8] {
     var unsafeValue = value
+    let count: Int
+    if value is Int && sizeof(Int) == sizeof(Int64) {
+        count = sizeof(Int32)
+    } else {
+        count = sizeof(Type)
+    }
     return withUnsafePointer(&unsafeValue) {
-        Array(UnsafeBufferPointer(start: UnsafePointer<UInt8>($0), count: sizeof(Type)))
+        return Array(UnsafeBufferPointer(start: UnsafePointer<UInt8>($0), count: count))
     }
 }
 
@@ -69,8 +75,8 @@ private func bytesToInteger<Type where Type: IntegerType>(from: [UInt8]) -> Type
 }
 
 /// function returns a number of .StringValue entries inside an array of CoderTreeValue (including subtrees)
-private func stringEntriesCount(array: [CoderTreeValue]) -> Int {
-    var result = 0
+private func stringEntriesCount(array: [CoderTreeValue]) -> Int32 {
+    var result: Int32 = 0
     for item in array {
         result += item.numberOfStringEntries
     }
@@ -80,7 +86,7 @@ private func stringEntriesCount(array: [CoderTreeValue]) -> Int {
 /// function returns a byte array in format [length_in_bytes] + [number of array items] + [bytes of CoderTreeValue array]
 /// this allows a decoder to set a capacity for an array of CoderTreeValue beign decoded from bytes
 private func countCapacityBytes(array: [CoderTreeValue]) -> [UInt8] {
-    var stringMap = Dictionary<String, [UInt8]>(minimumCapacity: stringEntriesCount(array))
+    var stringMap = Dictionary<String, [UInt8]>(minimumCapacity: Int(stringEntriesCount(array)))
 
     return countCapacityBytes(array, stringMap: &stringMap)
 }
@@ -95,12 +101,7 @@ private func countCapacityBytes(array: [CoderTreeValue], inout stringMap: [Strin
         item.writeToBuffer(&result, stringMap: &stringMap)
     }
 
-    let count = toByteArray(result.count)
-    let capacity = toByteArray(array.count)
-
-    result.insertContentsOf(capacity, at: 0)
-    result.insertContentsOf(count, at: 0)
-    return result
+    return toByteArray(result.count) + toByteArray(array.count) + result
 }
 
 // MARK: encoding extensions
@@ -121,7 +122,7 @@ private extension String {
 }
 
 private extension CoderTreeValue {
-    var numberOfStringEntries: Int {
+    var numberOfStringEntries: Int32 {
         switch self {
         case .StringValue, .NSURLValue:
             return 1
@@ -141,32 +142,32 @@ private extension CoderTreeValue {
 
     func writeToBuffer(inout buffer: [UInt8], inout stringMap: [String: [UInt8]]) {
         switch self {
-            case .StringValue, .NSURLValue:
-                self.writeStringBytes(&buffer, stringMap: &stringMap)
+        case .StringValue, .NSURLValue:
+            self.writeStringBytes(&buffer, stringMap: &stringMap)
 
-            case .IntValue, .Int64Value, .BoolValue:
-                self.writeIntBytes(&buffer)
+        case .IntValue, .Int64Value, .BoolValue:
+            self.writeIntBytes(&buffer)
 
-            case .DoubleValue, .FloatValue, .NSDateValue:
-                self.writeFloatBytes(&buffer)
+        case .DoubleValue, .FloatValue, .NSDateValue:
+            self.writeFloatBytes(&buffer)
 
-            case let .PairValue(key, value):
-                buffer.append(CerealCoderTreeValueType.Pair.rawValue)
-                key.writeToBuffer(&buffer, stringMap: &stringMap)
-                value.writeToBuffer(&buffer, stringMap: &stringMap)
+        case let .PairValue(key, value):
+            buffer.append(CerealCoderTreeValueType.Pair.rawValue)
+            key.writeToBuffer(&buffer, stringMap: &stringMap)
+            value.writeToBuffer(&buffer, stringMap: &stringMap)
 
-            case let .ArrayValue(array):
-                buffer.append(CerealCoderTreeValueType.Array.rawValue)
-                buffer.appendContentsOf(countCapacityBytes(array, stringMap: &stringMap))
+        case let .ArrayValue(array):
+            buffer.append(CerealCoderTreeValueType.Array.rawValue)
+            buffer.appendContentsOf(countCapacityBytes(array, stringMap: &stringMap))
 
-            case let .SubTree(items):
-                buffer.append(CerealCoderTreeValueType.SubTree.rawValue)
-                buffer.appendContentsOf(countCapacityBytes(items, stringMap: &stringMap))
+        case let .SubTree(items):
+            buffer.append(CerealCoderTreeValueType.SubTree.rawValue)
+            buffer.appendContentsOf(countCapacityBytes(items, stringMap: &stringMap))
 
-            case let .IdentifyingTree(key, items):
-                buffer.append(CerealCoderTreeValueType.IdentifyingTree.rawValue)
-                CoderTreeValue.StringValue(key).writeToBuffer(&buffer, stringMap: &stringMap)
-                buffer.appendContentsOf(countCapacityBytes(items, stringMap: &stringMap))
+        case let .IdentifyingTree(key, items):
+            buffer.append(CerealCoderTreeValueType.IdentifyingTree.rawValue)
+            CoderTreeValue.StringValue(key).writeToBuffer(&buffer, stringMap: &stringMap)
+            buffer.appendContentsOf(countCapacityBytes(items, stringMap: &stringMap))
         }
     }
 
@@ -177,7 +178,7 @@ private extension CoderTreeValue {
             string.writeToBuffer(&buffer, stringMap: &stringMap)
         case let .NSURLValue(url):
             buffer.append(CerealCoderTreeValueType.NSURL.rawValue)
-            url.absoluteString.writeToBuffer(&buffer, stringMap: &stringMap)
+            url.absoluteString!.writeToBuffer(&buffer, stringMap: &stringMap)
 
         default:
             break
@@ -245,7 +246,7 @@ extension CoderTreeValue {
         var result = [UInt8]()
         result.reserveCapacity(20)
 
-        var stringMap = Dictionary<String, [UInt8]>(minimumCapacity: self.numberOfStringEntries)
+        var stringMap = Dictionary<String, [UInt8]>(minimumCapacity: Int(self.numberOfStringEntries))
 
         self.writeToBuffer(&result, stringMap: &stringMap)
         return result
@@ -292,20 +293,20 @@ private extension String {
 }
 
 private extension CoderTreeValue {
-    static func readInt(inout bytes: [UInt8], inout offset: Int) -> Int? {
-        guard bytes.count >= offset + sizeof(Int) else { return nil }
+    static func readInt(inout bytes: [UInt8], inout offset: Int32) -> Int32? {
+        guard bytes.count >= Int(offset + sizeof(Int32)) else { return nil }
 
-        let bytesForInt: [UInt8] = Array(bytes[offset..<offset + sizeof(Int)])
-        let value: Int = bytesToInteger(bytesForInt)
+        let bytesForInt: [UInt8] = Array(bytes[Int(offset)..<Int(offset) + sizeof(Int32)])
+        let value: Int32 = bytesToInteger(bytesForInt)
 
-        offset += sizeof(Int)
+        offset += sizeof(Int32)
 
         return value
     }
 
-    static func readArray(inout bytes: [UInt8], inout offset: Int, capacity: Int, endOffset: Int) -> [CoderTreeValue]? {
+    static func readArray(inout bytes: [UInt8], inout offset: Int32, capacity: Int32, endOffset: Int32) -> [CoderTreeValue]? {
         var array = [CoderTreeValue]()
-        array.reserveCapacity(capacity)
+        array.reserveCapacity(Int(capacity))
         while offset < endOffset {
             guard let value = CoderTreeValue(bytes: &bytes, offset: &offset) else { return nil }
             array.append(value)
@@ -314,9 +315,11 @@ private extension CoderTreeValue {
         return array
     }
 
-    init?(inout bytes: [UInt8], inout offset: Int) {
-        guard bytes.count > offset + 1 else { return nil }
-        guard let type = CerealCoderTreeValueType(rawValue: bytes[offset]) else { return nil }
+    init?(inout bytes: [UInt8], inout offset: Int32) {
+        guard bytes.count > Int(offset + 1) else { return nil }
+        guard let type = CerealCoderTreeValueType(rawValue: bytes[Int(offset)]) else {
+            return nil
+        }
 
         offset += 1
 
@@ -335,9 +338,9 @@ private extension CoderTreeValue {
 
         guard let count = CoderTreeValue.readInt(&bytes, offset: &offset) else { return nil }
 
-        guard bytes.count >= offset + count else { return nil }
+        guard bytes.count >= Int(offset + count) else { return nil }
 
-        let capacity: Int
+        let capacity: Int32
 
         if [CerealCoderTreeValueType.Array, CerealCoderTreeValueType.SubTree, CerealCoderTreeValueType.IdentifyingTree].contains(type) {
             guard let capacityValue = CoderTreeValue.readInt(&bytes, offset: &offset) else { return nil }
@@ -349,68 +352,68 @@ private extension CoderTreeValue {
         let startIndex = offset
         let endIndex = offset + count
 
-        guard bytes.count >= endIndex else { return nil }
+        guard bytes.count >= Int(endIndex) else { return nil }
 
         switch type {
-            case .String, .NSURL:
-                let valueBytes = bytes[startIndex..<endIndex]
-                guard let string = String(utf8: valueBytes) else { return nil }
+        case .String, .NSURL:
+            let valueBytes = bytes[Int(startIndex)..<Int(endIndex)]
+            guard let string = String(utf8: valueBytes) else { return nil }
 
-                if type == .String {
-                    self = .StringValue(string)
-                } else {
-                    guard let url = NSURL(string: string) else { return nil }
-                    self = .NSURLValue(url)
-                }
+            if type == .String {
+                self = .StringValue(string)
+            } else {
+                guard let url = NSURL(string: string) else { return nil }
+                self = .NSURLValue(url)
+            }
 
-            case .Int:
-                let valueBytes = Array(bytes[startIndex..<endIndex])
-                let value = fromByteArray(valueBytes, Int.self)
-                self = .IntValue(value)
+        case .Int:
+            let valueBytes = Array(bytes[Int(startIndex)..<Int(endIndex)])
+            let value = fromByteArray(valueBytes, Int.self)
+            self = .IntValue(value)
 
-            case .Int64:
-                let valueBytes = Array(bytes[startIndex..<endIndex])
-                let value = fromByteArray(valueBytes, Int64.self)
-                self = .Int64Value(value)
+        case .Int64:
+            let valueBytes = Array(bytes[Int(startIndex)..<Int(endIndex)])
+            let value = fromByteArray(valueBytes, Int64.self)
+            self = .Int64Value(value)
 
-            case .Bool:
-                let valueBytes = Array(bytes[startIndex..<endIndex])
-                let value = valueBytes[0]
-                self = .BoolValue(value == 1)
+        case .Bool:
+            let valueBytes = Array(bytes[Int(startIndex)..<Int(endIndex)])
+            let value = valueBytes[0]
+            self = .BoolValue(value == 1)
 
-            case .Float:
-                let valueBytes = Array(bytes[startIndex..<endIndex])
-                let value = fromByteArray(valueBytes, Float.self)
-                self = .FloatValue(value)
+        case .Float:
+            let valueBytes = Array(bytes[Int(startIndex)..<Int(endIndex)])
+            let value = fromByteArray(valueBytes, Float.self)
+            self = .FloatValue(value)
 
-            case .Double, .NSDate:
-                let valueBytes = Array(bytes[startIndex..<endIndex])
-                let value = fromByteArray(valueBytes, Double.self)
-                if type == .Double {
-                    self = .DoubleValue(value)
-                } else {
-                    let date = NSDate(timeIntervalSinceReferenceDate: value)
-                    self = .NSDateValue(date)
-                }
+        case .Double, .NSDate:
+            let valueBytes = Array(bytes[Int(startIndex)..<Int(endIndex)])
+            let value = fromByteArray(valueBytes, Double.self)
+            if type == .Double {
+                self = .DoubleValue(value)
+            } else {
+                let date = NSDate(timeIntervalSinceReferenceDate: value)
+                self = .NSDateValue(date)
+            }
 
-            case .Array, .SubTree:
-                guard let array = CoderTreeValue.readArray(&bytes, offset: &offset, capacity: capacity, endOffset: endIndex) else { return nil }
+        case .Array, .SubTree:
+            guard let array = CoderTreeValue.readArray(&bytes, offset: &offset, capacity: capacity, endOffset: endIndex) else { return nil }
 
-                if type == .Array {
-                    self = .ArrayValue(array)
-                } else {
-                    self = .SubTree(array)
-                }
+            if type == .Array {
+                self = .ArrayValue(array)
+            } else {
+                self = .SubTree(array)
+            }
 
-            case .IdentifyingTree:
-                guard let id = identifier, case let .StringValue(string) = id else { return nil }
-                guard let array = CoderTreeValue.readArray(&bytes, offset: &offset, capacity: capacity, endOffset: endIndex) else { return nil }
+        case .IdentifyingTree:
+            guard let id = identifier, case let .StringValue(string) = id else { return nil }
+            guard let array = CoderTreeValue.readArray(&bytes, offset: &offset, capacity: capacity, endOffset: endIndex) else { return nil }
 
-                self = .IdentifyingTree(string, array)
-                return
+            self = .IdentifyingTree(string, array)
+            return
 
-            default:
-                return nil
+        default:
+            return nil
         }
 
         offset = endIndex
@@ -420,7 +423,7 @@ private extension CoderTreeValue {
 extension CoderTreeValue {
     init?(bytes: [UInt8]) {
         var bytes = bytes
-        var offset = 0
+        var offset: Int32 = 0
         self.init(bytes: &bytes, offset: &offset)
     }
     init?(data: NSData) {
@@ -428,7 +431,7 @@ extension CoderTreeValue {
         guard let result = CoderTreeValue(bytes: bytes) else {
             return nil
         }
-
+        
         self = result
     }
 }
